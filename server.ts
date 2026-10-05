@@ -2,10 +2,53 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import multer from "multer";
+import crypto from "crypto";
 import { GoogleGenAI } from "@google/genai";
 
 const app = express();
 const PORT = 3000;
+
+// System state & feature flags
+let cloudConversionEnabled = false; // Temporarily disabled by default as requested
+const SERVER_START_TIME = Date.now();
+let totalTranscriptionsCompleted = 0;
+
+// Admin authentication store
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "admin@transcriber.internal").trim().toLowerCase();
+const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || "AdminPass@2026!").trim();
+// Also accept the project owner's email
+const ADMIN_ALLOWED_EMAILS = [ADMIN_EMAIL, "lajpalaman1314@gmail.com".toLowerCase()];
+
+interface AdminSession {
+  email: string;
+  role: string;
+  createdAt: number;
+  expiresAt: number;
+}
+const adminSessions = new Map<string, AdminSession>();
+
+function extractToken(req: express.Request): string | null {
+  const authHeader = req.headers.authorization || req.headers["x-admin-token"];
+  if (typeof authHeader === "string") {
+    if (authHeader.startsWith("Bearer ")) {
+      return authHeader.slice(7).trim();
+    }
+    return authHeader.trim();
+  }
+  return null;
+}
+
+function getSessionFromRequest(req: express.Request): AdminSession | null {
+  const token = extractToken(req);
+  if (!token) return null;
+  const session = adminSessions.get(token);
+  if (!session) return null;
+  if (session.expiresAt < Date.now()) {
+    adminSessions.delete(token);
+    return null;
+  }
+  return session;
+}
 
 // Increase payload limits for base64 audio and JSON bodies
 app.use(express.json({ limit: "200mb" }));
@@ -339,12 +382,145 @@ app.get(["/health", "/api/health", "/_health"], (req, res) => {
     supportedFormats: [
       "mp3", "wav", "m4a", "aac", "ogg", "flac", "webm", "wma", "mp4", "mov", "mkv"
     ],
+    cloudConversionEnabled,
     timestamp: new Date().toISOString(),
+  });
+});
+
+// Public feature flags endpoint
+app.get("/api/features", (req, res) => {
+  res.json({
+    cloudConversionEnabled,
+    adminSignInAvailable: true,
+    onDeviceActive: true,
+  });
+});
+
+// Admin authentication: login
+app.post("/api/admin/login", (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: "Email and password are required." });
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const inputPassword = String(password).trim();
+
+  const isEmailValid = ADMIN_ALLOWED_EMAILS.includes(normalizedEmail);
+  const isPasswordValid = inputPassword === ADMIN_PASSWORD;
+
+  if (!isEmailValid || !isPasswordValid) {
+    return res.status(401).json({
+      success: false,
+      error: "Invalid administrator credentials. Access restricted to authorized admins.",
+    });
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const session: AdminSession = {
+    email: normalizedEmail,
+    role: "System Administrator",
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+  };
+  adminSessions.set(token, session);
+
+  console.log(`[Admin] Successful sign in by ${normalizedEmail}`);
+
+  res.json({
+    success: true,
+    token,
+    admin: {
+      email: session.email,
+      role: session.role,
+    },
+    cloudConversionEnabled,
+  });
+});
+
+// Admin session verification
+app.get("/api/admin/session", (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ authenticated: false, error: "Session expired or invalid" });
+  }
+  res.json({
+    authenticated: true,
+    admin: {
+      email: session.email,
+      role: session.role,
+    },
+    cloudConversionEnabled,
+  });
+});
+
+// Admin logout
+app.post("/api/admin/logout", (req, res) => {
+  const token = extractToken(req);
+  if (token) {
+    adminSessions.delete(token);
+  }
+  res.json({ success: true });
+});
+
+// Admin: System metrics and diagnostics
+app.get("/api/admin/system-stats", (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: "Unauthorized: Admin session required." });
+  }
+
+  const mem = process.memoryUsage();
+  res.json({
+    uptimeSeconds: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
+    memoryUsageMb: {
+      heapUsed: Math.round(mem.heapUsed / (1024 * 1024)),
+      heapTotal: Math.round(mem.heapTotal / (1024 * 1024)),
+      rss: Math.round(mem.rss / (1024 * 1024)),
+    },
+    geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    cloudConversionEnabled,
+    activeSessionsCount: adminSessions.size,
+    totalTranscriptionsCount: totalTranscriptionsCompleted,
+    uploadDirExists: fs.existsSync(UPLOAD_DIR),
+    nodeVersion: process.version,
+  });
+});
+
+// Admin: Toggle cloud conversion engine
+app.post("/api/admin/toggle-cloud", (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: "Unauthorized: Admin session required." });
+  }
+
+  const { enabled } = req.body;
+  cloudConversionEnabled = Boolean(enabled);
+  console.log(`[Admin] Cloud conversion engine toggled to: ${cloudConversionEnabled} by ${session.email}`);
+
+  res.json({
+    success: true,
+    cloudConversionEnabled,
   });
 });
 
 // Transcribe an uploaded audio file of ANY size
 app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
+  // Gate cloud conversion if temporarily disabled unless admin session provided
+  if (!cloudConversionEnabled) {
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      if (req.file && fs.existsSync(req.file.path)) {
+        try { fs.unlinkSync(req.file.path); } catch {}
+      }
+      return res.status(403).json({
+        error: "Cloud conversion is temporarily disabled by administrator. Please use the On-Device (Client-side) transcription engine, or sign in as Admin.",
+        code: "CLOUD_CONVERSION_DISABLED",
+        cloudDisabled: true,
+      });
+    }
+  }
+
   if (!req.file) {
     return res.status(400).json({ error: "No audio file provided." });
   }
@@ -439,6 +615,7 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     const fileSizeFormatted = `${parseFloat((fileSize / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 
     // Return the completed transcript
+    totalTranscriptionsCompleted++;
     res.json({
       id: `transcript-${Date.now()}`,
       fileName: originalName,
@@ -474,6 +651,18 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
 
 // Transcribe base64 inline audio (used for live microphone recording)
 app.post("/api/transcribe-base64", async (req, res) => {
+  // Gate cloud conversion if temporarily disabled unless admin session provided
+  if (!cloudConversionEnabled) {
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      return res.status(403).json({
+        error: "Cloud conversion is temporarily disabled by administrator. Please use the On-Device (Client-side) transcription engine, or sign in as Admin.",
+        code: "CLOUD_CONVERSION_DISABLED",
+        cloudDisabled: true,
+      });
+    }
+  }
+
   const {
     audioBase64,
     mimeType = "audio/webm",
@@ -523,6 +712,7 @@ app.post("/api/transcribe-base64", async (req, res) => {
     const i = Math.floor(Math.log(Math.max(approxBytes, 1)) / Math.log(k));
     const fileSizeFormatted = `${parseFloat((approxBytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 
+    totalTranscriptionsCompleted++;
     res.json({
       id: `recording-${Date.now()}`,
       fileName,

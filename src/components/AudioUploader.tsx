@@ -12,10 +12,12 @@ import {
   Cpu,
   Cloud,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 import { TranscriptionOptions, TranscriptionResult, TranscriptionEngine } from '../types';
 import { formatFileSize } from '../utils/audioHelpers';
 import { transcribeAudioClientSide } from '../services/localTranscriber';
+import { getStoredAdminToken } from '../services/adminAuth';
 
 interface AudioUploaderProps {
   options: TranscriptionOptions;
@@ -23,6 +25,8 @@ interface AudioUploaderProps {
   onTranscriptionComplete: (result: TranscriptionResult, audioFileUrl?: string) => void;
   isProcessing: boolean;
   setIsProcessing: (val: boolean) => void;
+  cloudConversionEnabled?: boolean;
+  isAdmin?: boolean;
 }
 
 export const AudioUploader: React.FC<AudioUploaderProps> = ({
@@ -31,6 +35,8 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
   onTranscriptionComplete,
   isProcessing,
   setIsProcessing,
+  cloudConversionEnabled = false,
+  isAdmin = false,
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -192,8 +198,14 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
     };
 
     xhr.open('POST', '/api/transcribe');
+    const token = getStoredAdminToken();
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    }
     xhr.send(formData);
   };
+
+  const isCloudAllowed = cloudConversionEnabled || isAdmin;
 
   return (
     <div
@@ -242,16 +254,36 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => onChangeEngine('cloud')}
-              disabled={isProcessing}
+              onClick={() => {
+                if (isCloudAllowed) {
+                  onChangeEngine('cloud');
+                }
+              }}
+              disabled={isProcessing || !isCloudAllowed}
+              title={
+                isCloudAllowed
+                  ? 'Switch to Cloud Gemini Engine'
+                  : 'Cloud conversion is temporarily paused by administrator. On-Device Whisper is active.'
+              }
               className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
                 options.engine === 'cloud'
                   ? 'bg-white text-zinc-900 shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-900'
+                  : isCloudAllowed
+                  ? 'text-zinc-600 hover:text-zinc-900'
+                  : 'text-zinc-400 cursor-not-allowed opacity-60'
               }`}
             >
-              <Cloud className="h-3.5 w-3.5 text-blue-600" />
+              {!isCloudAllowed ? (
+                <Lock className="h-3 w-3 text-zinc-400" />
+              ) : (
+                <Cloud className="h-3.5 w-3.5 text-blue-600" />
+              )}
               <span>Cloud (Gemini)</span>
+              {!isCloudAllowed && (
+                <span className="rounded bg-zinc-200 px-1 py-0.2 text-[9px] font-normal text-zinc-600">
+                  Paused
+                </span>
+              )}
             </button>
           </div>
         )}

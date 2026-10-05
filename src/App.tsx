@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   UploadCloud,
   Mic,
@@ -12,6 +12,7 @@ import {
   History,
   Layers,
   ArrowRight,
+  Lock,
 } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { AudioUploader } from './components/AudioUploader';
@@ -22,6 +23,13 @@ import { AudioPlayerBar } from './components/AudioPlayerBar';
 import { ExportModal } from './components/ExportModal';
 import { AIInsightsPanel } from './components/AIInsightsPanel';
 import { SettingsModal } from './components/SettingsModal';
+import { AdminSignInModal } from './components/AdminSignInModal';
+import { AdminControlModal } from './components/AdminControlModal';
+import {
+  AdminUser,
+  fetchFeaturesConfig,
+  verifyAdminSession,
+} from './services/adminAuth';
 import { TranscriptionOptions, TranscriptionResult, TranscriptSegment } from './types';
 
 export default function App() {
@@ -36,6 +44,13 @@ export default function App() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isInsightsOpen, setIsInsightsOpen] = useState(false);
 
+  // Admin authentication state & feature flags
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminUser, setAdminUser] = useState<AdminUser | null>(null);
+  const [isAdminSignInOpen, setIsAdminSignInOpen] = useState(false);
+  const [isAdminControlOpen, setIsAdminControlOpen] = useState(false);
+  const [cloudConversionEnabled, setCloudConversionEnabled] = useState(false);
+
   // Session history of transcripts
   const [history, setHistory] = useState<TranscriptionResult[]>([]);
 
@@ -49,6 +64,45 @@ export default function App() {
   });
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Check admin session and fetch features config on mount
+  useEffect(() => {
+    async function initSystem() {
+      const config = await fetchFeaturesConfig();
+      setCloudConversionEnabled(config.cloudConversionEnabled);
+
+      const session = await verifyAdminSession();
+      if (session.authenticated && session.admin) {
+        setIsAdmin(true);
+        setAdminUser(session.admin);
+        if (typeof session.cloudConversionEnabled === 'boolean') {
+          setCloudConversionEnabled(session.cloudConversionEnabled);
+        }
+      }
+    }
+    initSystem();
+  }, []);
+
+  // When cloud conversion is disabled and user is not admin, force engine to 'client'
+  useEffect(() => {
+    if (!cloudConversionEnabled && !isAdmin && options.engine === 'cloud') {
+      setOptions((prev) => ({ ...prev, engine: 'client' }));
+    }
+  }, [cloudConversionEnabled, isAdmin, options.engine]);
+
+  const handleAdminSignInSuccess = (admin: AdminUser, cloudEnabled: boolean) => {
+    setIsAdmin(true);
+    setAdminUser(admin);
+    setCloudConversionEnabled(cloudEnabled);
+  };
+
+  const handleAdminSignOut = () => {
+    setIsAdmin(false);
+    setAdminUser(null);
+    if (!cloudConversionEnabled) {
+      setOptions((prev) => ({ ...prev, engine: 'client' }));
+    }
+  };
 
   const handleTranscriptionComplete = (result: TranscriptionResult, localAudioUrl?: string) => {
     setActiveResult(result);
@@ -98,11 +152,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-zinc-50/50 text-zinc-900 selection:bg-zinc-900 selection:text-white flex flex-col font-sans">
-      {/* Top Navbar */}
+      {/* Top Navbar with Admin Sign In */}
       <Navbar
         onOpenSettings={() => setIsSettingsOpen(true)}
         onReset={handleReset}
         hasActiveTranscript={Boolean(activeResult)}
+        isAdmin={isAdmin}
+        adminUser={adminUser}
+        cloudConversionEnabled={cloudConversionEnabled}
+        onOpenAdminSignIn={() => setIsAdminSignInOpen(true)}
+        onOpenAdminControl={() => setIsAdminControlOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -134,8 +193,7 @@ export default function App() {
               </h1>
 
               <p className="mx-auto max-w-2xl text-sm leading-relaxed text-zinc-600 sm:text-base">
-                Transcribe recordings on-device directly in your browser using Transformers.js Whisper (no backend or API required),
-                or switch to the Cloud Gemini engine for multi-hour recordings.
+                Transcribe recordings on-device directly in your browser using Transformers.js Whisper (no backend or API required, 100% private and uncapped).
               </p>
             </div>
 
@@ -179,6 +237,8 @@ export default function App() {
                   onTranscriptionComplete={handleTranscriptionComplete}
                   isProcessing={isProcessing}
                   setIsProcessing={setIsProcessing}
+                  cloudConversionEnabled={cloudConversionEnabled}
+                  isAdmin={isAdmin}
                 />
               ) : (
                 <AudioRecorder
@@ -187,6 +247,8 @@ export default function App() {
                   onTranscriptionComplete={handleTranscriptionComplete}
                   isProcessing={isProcessing}
                   setIsProcessing={setIsProcessing}
+                  cloudConversionEnabled={cloudConversionEnabled}
+                  isAdmin={isAdmin}
                 />
               )}
             </div>
@@ -217,9 +279,9 @@ export default function App() {
                 <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900">
                   <Sparkles className="h-4 w-4" />
                 </div>
-                <h3 className="text-xs font-semibold text-zinc-900">Dual Processing Engines</h3>
+                <h3 className="text-xs font-semibold text-zinc-900">On-Device Whisper Engine</h3>
                 <p className="mt-1 text-xs text-zinc-500 leading-relaxed">
-                  Switch between instant local browser processing (zero API keys required) and the cloud Gemini speech model at any time.
+                  Runs directly inside client memory with zero API key dependencies and zero data transmission over the wire.
                 </p>
               </div>
             </div>
@@ -248,18 +310,21 @@ export default function App() {
                       className="flex cursor-pointer items-center justify-between py-3 transition hover:bg-zinc-50 px-2 rounded-lg"
                     >
                       <div className="flex items-center gap-3">
-                        <FileAudio className="h-5 w-5 text-zinc-400" />
+                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-700">
+                          <FileAudio className="h-4 w-4" />
+                        </div>
                         <div>
                           <p className="text-xs font-semibold text-zinc-900">{item.fileName}</p>
                           <p className="text-[11px] text-zinc-500">
-                            {item.fileSizeFormatted} • {item.segments.length} segments • {new Date(item.createdAt).toLocaleTimeString()}
+                            {item.fileSizeFormatted} • {item.segments.length} segments • {item.detectedLanguage}
                           </p>
                         </div>
                       </div>
-                      <span className="flex items-center gap-1 text-xs font-medium text-zinc-900">
-                        View
-                        <ArrowRight className="h-3 w-3" />
-                      </span>
+
+                      <div className="flex items-center gap-2 text-zinc-400">
+                        <span className="text-xs font-mono">{item.durationFormatted || ''}</span>
+                        <ArrowRight className="h-4 w-4" />
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -269,14 +334,16 @@ export default function App() {
         )}
       </main>
 
-      {/* Floating Audio Player (Active when an audio file is loaded) */}
-      <AudioPlayerBar
-        audioUrl={audioUrl}
-        currentTime={currentTime}
-        onTimeUpdate={setCurrentTime}
-        onSeek={handleSeek}
-        audioRef={audioRef}
-      />
+      {/* Floating Audio Player Bar (when active transcription has an audio file) */}
+      {activeResult && audioUrl && (
+        <AudioPlayerBar
+          audioRef={audioRef}
+          audioUrl={audioUrl}
+          currentTime={currentTime}
+          onTimeUpdate={(t) => setCurrentTime(t)}
+          fileName={activeResult.fileName}
+        />
+      )}
 
       {/* Modals */}
       <SettingsModal
@@ -284,6 +351,23 @@ export default function App() {
         setOptions={setOptions}
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        cloudConversionEnabled={cloudConversionEnabled}
+        isAdmin={isAdmin}
+      />
+
+      <AdminSignInModal
+        isOpen={isAdminSignInOpen}
+        onClose={() => setIsAdminSignInOpen(false)}
+        onSuccess={handleAdminSignInSuccess}
+      />
+
+      <AdminControlModal
+        isOpen={isAdminControlOpen}
+        onClose={() => setIsAdminControlOpen(false)}
+        admin={adminUser}
+        cloudConversionEnabled={cloudConversionEnabled}
+        onUpdateCloudConversion={(enabled) => setCloudConversionEnabled(enabled)}
+        onSignOut={handleAdminSignOut}
       />
 
       {activeResult && (
@@ -305,7 +389,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-zinc-200 bg-white py-4 text-center text-xs text-zinc-500">
-        <p>Audio to Text Transcriber • No Upload Limit • Verbatim AI Transcription</p>
+        <p>Audio to Text Transcriber • On-Device Whisper &amp; Verbatim AI Engine</p>
       </footer>
     </div>
   );

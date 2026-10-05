@@ -11,6 +11,7 @@ import {
   Cpu,
   Cloud,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 import { TranscriptionOptions } from '../types';
 
@@ -19,6 +20,8 @@ interface SettingsModalProps {
   setOptions: React.Dispatch<React.SetStateAction<TranscriptionOptions>>;
   isOpen: boolean;
   onClose: () => void;
+  cloudConversionEnabled?: boolean;
+  isAdmin?: boolean;
 }
 
 const LANGUAGES = [
@@ -44,6 +47,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   setOptions,
   isOpen,
   onClose,
+  cloudConversionEnabled = false,
+  isAdmin = false,
 }) => {
   if (!isOpen) return null;
 
@@ -97,23 +102,48 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </p>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setOptions((prev) => ({ ...prev, engine: 'cloud' }))}
-                className={`rounded-xl border p-3 text-left transition ${
-                  options.engine === 'cloud'
-                    ? 'border-blue-600 bg-blue-50/50 text-zinc-900 ring-1 ring-blue-600/30'
-                    : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
-                }`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <Cloud className="h-4 w-4 text-blue-600" />
-                  <p className="text-xs font-semibold">Cloud (Gemini)</p>
-                </div>
-                <p className="text-[11px] text-zinc-500 mt-1">
-                  Streaming cloud pipeline for large multi-hour recordings.
-                </p>
-              </button>
+              {(() => {
+                const isCloudAllowed = cloudConversionEnabled || isAdmin;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isCloudAllowed) {
+                        setOptions((prev) => ({ ...prev, engine: 'cloud' }));
+                      }
+                    }}
+                    disabled={!isCloudAllowed}
+                    className={`rounded-xl border p-3 text-left transition ${
+                      options.engine === 'cloud' && isCloudAllowed
+                        ? 'border-blue-600 bg-blue-50/50 text-zinc-900 ring-1 ring-blue-600/30'
+                        : isCloudAllowed
+                        ? 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+                        : 'border-zinc-200 bg-zinc-50 text-zinc-400 cursor-not-allowed opacity-75'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        {!isCloudAllowed ? (
+                          <Lock className="h-4 w-4 text-zinc-400" />
+                        ) : (
+                          <Cloud className="h-4 w-4 text-blue-600" />
+                        )}
+                        <p className="text-xs font-semibold">Cloud (Gemini)</p>
+                      </div>
+                      {!isCloudAllowed && (
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-800">
+                          Paused
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-zinc-500 mt-1">
+                      {!isCloudAllowed
+                        ? 'Temporarily disabled by admin. On-device engine is active.'
+                        : 'Streaming cloud pipeline for large multi-hour recordings.'}
+                    </p>
+                  </button>
+                );
+              })()}
             </div>
           </div>
 

@@ -12,11 +12,13 @@ import {
   Cpu,
   Cloud,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 import { TranscriptionOptions, TranscriptionResult, TranscriptionEngine } from '../types';
 import { formatSeconds } from '../utils/audioHelpers';
 import { transcribeAudioClientSide } from '../services/localTranscriber';
 import { WebSpeechRecognizer } from '../services/webSpeechService';
+import { getStoredAdminToken } from '../services/adminAuth';
 
 interface AudioRecorderProps {
   options: TranscriptionOptions;
@@ -24,6 +26,8 @@ interface AudioRecorderProps {
   onTranscriptionComplete: (result: TranscriptionResult, audioUrl?: string) => void;
   isProcessing: boolean;
   setIsProcessing: (val: boolean) => void;
+  cloudConversionEnabled?: boolean;
+  isAdmin?: boolean;
 }
 
 export const AudioRecorder: React.FC<AudioRecorderProps> = ({
@@ -32,6 +36,8 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   onTranscriptionComplete,
   isProcessing,
   setIsProcessing,
+  cloudConversionEnabled = false,
+  isAdmin = false,
 }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -328,8 +334,15 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
       formData.append('timestampGranularity', options.timestampGranularity);
       formData.append('customVocabulary', options.customVocabulary);
 
+      const token = getStoredAdminToken();
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const response = await fetch('/api/transcribe', {
         method: 'POST',
+        headers,
         body: formData,
       });
 
@@ -358,6 +371,8 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
       setIsPlayingPreview(true);
     }
   };
+
+  const isCloudAllowed = cloudConversionEnabled || isAdmin;
 
   return (
     <div id="audio-recorder-card" className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
@@ -402,16 +417,36 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => onChangeEngine('cloud')}
-              disabled={isProcessing || isRecording}
+              onClick={() => {
+                if (isCloudAllowed) {
+                  onChangeEngine('cloud');
+                }
+              }}
+              disabled={isProcessing || isRecording || !isCloudAllowed}
+              title={
+                isCloudAllowed
+                  ? 'Switch to Cloud Gemini Engine'
+                  : 'Cloud conversion is temporarily paused by administrator. On-Device processing is active.'
+              }
               className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
                 options.engine === 'cloud'
                   ? 'bg-white text-zinc-900 shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-900'
+                  : isCloudAllowed
+                  ? 'text-zinc-600 hover:text-zinc-900'
+                  : 'text-zinc-400 cursor-not-allowed opacity-60'
               }`}
             >
-              <Cloud className="h-3.5 w-3.5 text-blue-600" />
+              {!isCloudAllowed ? (
+                <Lock className="h-3 w-3 text-zinc-400" />
+              ) : (
+                <Cloud className="h-3.5 w-3.5 text-blue-600" />
+              )}
               <span>Cloud</span>
+              {!isCloudAllowed && (
+                <span className="rounded bg-zinc-200 px-1 py-0.2 text-[9px] font-normal text-zinc-600">
+                  Paused
+                </span>
+              )}
             </button>
           </div>
         )}
