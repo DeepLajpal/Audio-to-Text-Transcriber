@@ -39,8 +39,9 @@ export default function App() {
   // Session history of transcripts
   const [history, setHistory] = useState<TranscriptionResult[]>([]);
 
-  // Transcription options
+  // Transcription options - default to client-side on-device
   const [options, setOptions] = useState<TranscriptionOptions>({
+    engine: 'client',
     language: 'auto',
     detectSpeakers: true,
     timestampGranularity: 'detailed',
@@ -123,9 +124,9 @@ export default function App() {
           <div className="space-y-8 max-w-4xl mx-auto">
             {/* Value Proposition Hero */}
             <div className="text-center space-y-3 pt-2">
-              <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3.5 py-1 text-xs font-semibold text-zinc-800 shadow-xs">
+              <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3.5 py-1 text-xs font-semibold text-emerald-800 shadow-xs">
                 <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Zero File Size Limits • Multi-Gigabyte Stream Pipeline</span>
+                <span>100% On-Device In-Browser Mode • Zero Backend Upload • Zero API Fees</span>
               </div>
 
               <h1 className="text-3xl font-extrabold tracking-tight text-zinc-900 sm:text-4xl">
@@ -133,8 +134,8 @@ export default function App() {
               </h1>
 
               <p className="mx-auto max-w-2xl text-sm leading-relaxed text-zinc-600 sm:text-base">
-                Transcribe recordings of any duration or file size with precision timestamps,
-                automatic speaker diarization, and immediate export to text, subtitles (SRT/VTT), or Markdown.
+                Transcribe recordings on-device directly in your browser using Transformers.js Whisper (no backend or API required),
+                or switch to the Cloud Gemini engine for multi-hour recordings.
               </p>
             </div>
 
@@ -151,7 +152,7 @@ export default function App() {
                   }`}
                 >
                   <UploadCloud className="h-4 w-4" />
-                  <span>Upload Audio File (No Limit)</span>
+                  <span>Upload Audio File</span>
                 </button>
 
                 <button
@@ -174,6 +175,7 @@ export default function App() {
               {activeTab === 'upload' ? (
                 <AudioUploader
                   options={options}
+                  onChangeEngine={(engine) => setOptions((prev) => ({ ...prev, engine }))}
                   onTranscriptionComplete={handleTranscriptionComplete}
                   isProcessing={isProcessing}
                   setIsProcessing={setIsProcessing}
@@ -181,6 +183,7 @@ export default function App() {
               ) : (
                 <AudioRecorder
                   options={options}
+                  onChangeEngine={(engine) => setOptions((prev) => ({ ...prev, engine }))}
                   onTranscriptionComplete={handleTranscriptionComplete}
                   isProcessing={isProcessing}
                   setIsProcessing={setIsProcessing}
@@ -191,12 +194,12 @@ export default function App() {
             {/* Feature Highlights Grid */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-xs">
-                <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900">
-                  <HardDrive className="h-4 w-4" />
+                <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-100">
+                  <ShieldCheck className="h-4 w-4" />
                 </div>
-                <h3 className="text-xs font-semibold text-zinc-900">No Upload Size Limit</h3>
+                <h3 className="text-xs font-semibold text-zinc-900">100% On-Device &amp; Private</h3>
                 <p className="mt-1 text-xs text-zinc-500 leading-relaxed">
-                  Upload files of 50MB, 500MB, or 2GB+ seamlessly via streaming server disk buffers.
+                  Uses Transformers.js Whisper WASM/WebGPU to transcribe audio entirely inside your browser. Audio never leaves your computer.
                 </p>
               </div>
 
@@ -204,9 +207,9 @@ export default function App() {
                 <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900">
                   <Clock className="h-4 w-4" />
                 </div>
-                <h3 className="text-xs font-semibold text-zinc-900">Clickable Timestamps</h3>
+                <h3 className="text-xs font-semibold text-zinc-900">Interactive Click-to-Seek</h3>
                 <p className="mt-1 text-xs text-zinc-500 leading-relaxed">
-                  Every sentence is tagged with exact timecodes synced directly to the interactive audio player.
+                  Every sentence is mapped to audio timestamps so you can jump to exact moments in playback with 1 click.
                 </p>
               </div>
 
@@ -214,9 +217,9 @@ export default function App() {
                 <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-900">
                   <Sparkles className="h-4 w-4" />
                 </div>
-                <h3 className="text-xs font-semibold text-zinc-900">Speaker Diarization</h3>
+                <h3 className="text-xs font-semibold text-zinc-900">Dual Processing Engines</h3>
                 <p className="mt-1 text-xs text-zinc-500 leading-relaxed">
-                  Automatically separates dialogue between different speakers, interviewers, and meeting participants.
+                  Switch between instant local browser processing (zero API keys required) and the cloud Gemini speech model at any time.
                 </p>
               </div>
             </div>

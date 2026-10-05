@@ -2,8 +2,7 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import multer from "multer";
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
-import { createServer as createViteServer } from "vite";
+import { GoogleGenAI } from "@google/genai";
 
 const app = express();
 const PORT = 3000;
@@ -330,8 +329,8 @@ async function askQuestionWithGemini(
 
 // ---------------- API ROUTES ----------------
 
-// Health check and feature capability information
-app.get("/api/health", (req, res) => {
+// Health check and feature capability information (supports root /health, /_health, and /api/health)
+app.get(["/health", "/api/health", "/_health"], (req, res) => {
   res.json({
     status: "ok",
     service: "Audio to Text Transcriber API",
@@ -619,23 +618,62 @@ Question: ${question}`;
 // ---------------- VITE & STATIC SERVING ----------------
 
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  // Determine if running in production mode:
+  // 1. Explicit NODE_ENV === "production"
+  // 2. Or executed as compiled bundle in dist/ (e.g. dist/server.cjs)
+  // 3. Or when index.html is located in dist/ or current directory without NODE_ENV === "development"
+  const isCjsBundle = typeof __filename !== "undefined" && (__filename.endsWith(".cjs") || __filename.includes("dist"));
+  const possibleDistDirs = [
+    path.join(process.cwd(), "dist"),
+    typeof __dirname !== "undefined" ? __dirname : "",
+    typeof __dirname !== "undefined" ? path.join(__dirname, "dist") : "",
+    path.resolve("dist"),
+  ].filter(Boolean);
+
+  const foundDistPath = possibleDistDirs.find((d) => fs.existsSync(path.join(d, "index.html")));
+  const hasDistIndex = Boolean(foundDistPath);
+  const isProduction =
+    process.env.NODE_ENV === "production" ||
+    isCjsBundle ||
+    (process.env.NODE_ENV !== "development" && hasDistIndex);
+
+  if (isProduction) {
+    process.env.NODE_ENV = "production";
+    const distPath = foundDistPath || path.join(process.cwd(), "dist");
+
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      const indexPath = path.join(distPath, "index.html");
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send("Application files not found.");
+      }
+    });
+  } else {
+    // Dynamic import to avoid bundling or loading Vite in production
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`Server listening on http://0.0.0.0:${PORT} (${isProduction ? "production" : "development"})`);
   });
 }
 
-startServer();
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error);
+});
+
+startServer().catch((err) => {
+  console.error("Fatal startup error:", err);
+  process.exit(1);
+});

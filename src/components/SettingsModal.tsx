@@ -8,6 +8,9 @@ import {
   X,
   HardDrive,
   Info,
+  Cpu,
+  Cloud,
+  ShieldCheck,
 } from 'lucide-react';
 import { TranscriptionOptions } from '../types';
 
@@ -49,7 +52,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       id="settings-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4 backdrop-blur-xs"
     >
-      <div className="relative w-full max-w-lg rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl">
+      <div className="relative w-full max-w-lg rounded-2xl border border-zinc-200 bg-white p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="mb-4 flex items-center justify-between border-b border-zinc-100 pb-3">
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-white">
@@ -57,7 +60,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-semibold text-zinc-900">Transcription Settings</h2>
-              <p className="text-xs text-zinc-500">Configure language, speakers, and timing options</p>
+              <p className="text-xs text-zinc-500">Configure processing engine, language, and accuracy</p>
             </div>
           </div>
           <button
@@ -69,6 +72,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         <div className="space-y-4">
+          {/* Transcription Engine Selection */}
+          <div>
+            <label className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
+              <Cpu className="h-3.5 w-3.5 text-zinc-500" />
+              Transcription Engine
+            </label>
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setOptions((prev) => ({ ...prev, engine: 'client' }))}
+                className={`rounded-xl border p-3 text-left transition ${
+                  options.engine === 'client'
+                    ? 'border-emerald-600 bg-emerald-50/50 text-zinc-900 ring-1 ring-emerald-600/30'
+                    : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                  <p className="text-xs font-semibold">On-Device (Client)</p>
+                </div>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  100% private in browser. No backend upload, zero API fees.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOptions((prev) => ({ ...prev, engine: 'cloud' }))}
+                className={`rounded-xl border p-3 text-left transition ${
+                  options.engine === 'cloud'
+                    ? 'border-blue-600 bg-blue-50/50 text-zinc-900 ring-1 ring-blue-600/30'
+                    : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Cloud className="h-4 w-4 text-blue-600" />
+                  <p className="text-xs font-semibold">Cloud (Gemini)</p>
+                </div>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  Streaming cloud pipeline for large multi-hour recordings.
+                </p>
+              </button>
+            </div>
+          </div>
+
           {/* Language Selection */}
           <div>
             <label className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-zinc-700">
@@ -191,7 +239,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="flex items-start gap-2 rounded-xl bg-zinc-50 p-3 text-[11px] text-zinc-600 border border-zinc-200">
             <Info className="h-4 w-4 shrink-0 text-zinc-500 mt-0.5" />
             <div>
-              <span className="font-semibold text-zinc-900">Zero Upload Limit Architecture:</span> Audio streams directly to ephemeral server disk storage with no body-parser limits, then bridges to the Gemini Files API.
+              <span className="font-semibold text-zinc-900">Privacy &amp; Security:</span> In{' '}
+              <span className="font-semibold text-emerald-700">On-Device</span> mode, audio samples are decoded directly with Web Audio API and transcribed via local Transformers.js Whisper WASM runtime. Audio never leaves your device.
             </div>
           </div>
         </div>

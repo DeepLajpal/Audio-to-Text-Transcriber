@@ -9,8 +9,13 @@ import {
   X,
   RefreshCw,
   Lightbulb,
+  Cpu,
 } from 'lucide-react';
 import { TranscriptionResult } from '../types';
+import {
+  extractClientSideInsights,
+  findLocalAnswerInTranscript,
+} from '../services/localTranscriber';
 
 interface AIInsightsPanelProps {
   result: TranscriptionResult;
@@ -29,13 +34,29 @@ export const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
   const [insightError, setInsightError] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
   const [isAsking, setIsAsking] = useState(false);
-  const [qaHistory, setQaHistory] = useState<Array<{ q: string; a: string }>>([]);
+  const [qaHistory, setQaHistory] = useState<Array<{ q: string; a: string; isLocal?: boolean }>>([]);
 
   if (!isOpen) return null;
 
-  const handleGenerateInsights = async () => {
+  const handleGenerateInsights = async (preferClientSide = false) => {
     setIsGenerating(true);
     setInsightError(null);
+
+    if (preferClientSide) {
+      try {
+        const localInsights = extractClientSideInsights(result.fullText, result.segments);
+        onUpdateResult({
+          summary: localInsights.summary,
+          actionItems: localInsights.actionItems,
+          keyTopics: localInsights.keyTopics,
+        });
+        setIsGenerating(false);
+        return;
+      } catch (err: any) {
+        console.error('Local insight generation error:', err);
+      }
+    }
+
     try {
       const response = await fetch('/api/generate-insights', {
         method: 'POST',
@@ -44,8 +65,15 @@ export const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to generate insights. Please try again.');
+        // Fall back to client-side extractive summarizer
+        const localInsights = extractClientSideInsights(result.fullText, result.segments);
+        onUpdateResult({
+          summary: localInsights.summary,
+          actionItems: localInsights.actionItems,
+          keyTopics: localInsights.keyTopics,
+        });
+        setIsGenerating(false);
+        return;
       }
       const data = await response.json();
 
@@ -55,8 +83,17 @@ export const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
         keyTopics: data.keyTopics,
       });
     } catch (err: any) {
-      console.error(err);
-      setInsightError(err?.message || 'Failed to generate summary. Please try again.');
+      console.warn('Cloud insights failed, falling back to on-device insights:', err);
+      try {
+        const localInsights = extractClientSideInsights(result.fullText, result.segments);
+        onUpdateResult({
+          summary: localInsights.summary,
+          actionItems: localInsights.actionItems,
+          keyTopics: localInsights.keyTopics,
+        });
+      } catch {
+        setInsightError(err?.message || 'Failed to generate summary. Please try again.');
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -77,15 +114,18 @@ export const AIInsightsPanel: React.FC<AIInsightsPanelProps> = ({
         body: JSON.stringify({ transcript: result.fullText, question: userQ }),
       });
 
-      if (!response.ok) throw new Error('Failed to get answer');
+      if (!response.ok) {
+        // Fallback to local on-device transcript search
+        const localAnswer = findLocalAnswerInTranscript(result.segments, result.fullText, userQ);
+        setQaHistory((prev) => [...prev, { q: userQ, a: localAnswer, isLocal: true }]);
+        return;
+      }
       const data = await response.json();
-
       setQaHistory((prev) => [...prev, { q: userQ, a: data.answer }]);
     } catch (err: any) {
-      setQaHistory((prev) => [
-        ...prev,
-        { q: userQ, a: 'Error: Could not retrieve answer from model. Please try again.' },
-      ]);
+      console.warn('Cloud Q&A failed, falling back to on-device transcript analysis:', err);
+      const localAnswer = findLocalAnswerInTranscript(result.segments, result.fullText, userQ);
+      setQaHistory((prev) => [...prev, { q: userQ, a: localAnswer, isLocal: true }]);
     } finally {
       setIsAsking(false);
     }

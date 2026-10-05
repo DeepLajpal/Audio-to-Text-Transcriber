@@ -1,10 +1,25 @@
 import React, { useRef, useState } from 'react';
-import { UploadCloud, FileAudio, AlertCircle, CheckCircle2, Loader2, HardDrive, Clock, Radio, X } from 'lucide-react';
-import { TranscriptionOptions, TranscriptionResult } from '../types';
+import {
+  UploadCloud,
+  FileAudio,
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  HardDrive,
+  Clock,
+  Radio,
+  X,
+  Cpu,
+  Cloud,
+  ShieldCheck,
+} from 'lucide-react';
+import { TranscriptionOptions, TranscriptionResult, TranscriptionEngine } from '../types';
 import { formatFileSize } from '../utils/audioHelpers';
+import { transcribeAudioClientSide } from '../services/localTranscriber';
 
 interface AudioUploaderProps {
   options: TranscriptionOptions;
+  onChangeEngine?: (engine: TranscriptionEngine) => void;
   onTranscriptionComplete: (result: TranscriptionResult, audioFileUrl?: string) => void;
   isProcessing: boolean;
   setIsProcessing: (val: boolean) => void;
@@ -12,6 +27,7 @@ interface AudioUploaderProps {
 
 export const AudioUploader: React.FC<AudioUploaderProps> = ({
   options,
+  onChangeEngine,
   onTranscriptionComplete,
   isProcessing,
   setIsProcessing,
@@ -69,10 +85,39 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
     setIsProcessing(true);
     setErrorMessage(null);
     setUploadProgress(0);
-    setStageText('Uploading audio stream to zero-limit server buffer...');
 
     // Create a local object URL for playback
     const localAudioUrl = URL.createObjectURL(selectedFile);
+
+    // 1. CLIENT-SIDE ON-DEVICE TRANSCRIPTION (Zero Backend Upload, 100% In-Browser)
+    if (options.engine === 'client') {
+      try {
+        setStageText('Reading audio and decoding locally via Web Audio API...');
+        const result = await transcribeAudioClientSide(
+          selectedFile,
+          selectedFile.name,
+          options,
+          ({ stage, progressPercent, message }) => {
+            setUploadProgress(progressPercent);
+            setStageText(message);
+          }
+        );
+
+        setIsProcessing(false);
+        setUploadProgress(100);
+        onTranscriptionComplete(result, localAudioUrl);
+      } catch (err: any) {
+        console.error('Client-side transcription error:', err);
+        setIsProcessing(false);
+        setErrorMessage(
+          err?.message || 'Client-side transcription failed. Try switching to Cloud mode or retry.'
+        );
+      }
+      return;
+    }
+
+    // 2. CLOUD BACKEND TRANSCRIPTION (Streaming via Gemini)
+    setStageText('Uploading audio stream to zero-limit server buffer...');
 
     const formData = new FormData();
     formData.append('audio', selectedFile);
@@ -96,7 +141,7 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
         const durationSec = (currentTime - startTime) / 1000;
         if (durationSec > 0.5) {
           const bytesDiff = event.loaded - prevLoaded;
-          const speed = (bytesDiff / durationSec); // bytes per sec
+          const speed = bytesDiff / durationSec;
           setUploadSpeed(`${formatFileSize(speed)}/s`);
           startTime = currentTime;
           prevLoaded = event.loaded;
@@ -105,7 +150,9 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
         if (percent >= 100) {
           setStageText('Processing & transcribing with Gemini Speech Engine...');
         } else {
-          setStageText(`Streaming audio payload (${formatFileSize(event.loaded)} / ${formatFileSize(event.total)})...`);
+          setStageText(
+            `Streaming audio payload (${formatFileSize(event.loaded)} / ${formatFileSize(event.total)})...`
+          );
         }
       }
     };
@@ -149,25 +196,65 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
   };
 
   return (
-    <div id="audio-uploader-card" className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm transition hover:border-zinc-300">
-      {/* Header Info */}
+    <div
+      id="audio-uploader-card"
+      className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm transition hover:border-zinc-300"
+    >
+      {/* Header Info with Engine Mode Badge & Selector */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 pb-4">
         <div>
-          <h2 className="text-base font-semibold text-zinc-900">Upload Audio File</h2>
-          <p className="text-xs text-zinc-500">
-            Uncapped file size. Supports recordings of any duration from seconds to full-day events.
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-zinc-900">Upload Audio File</h2>
+            {options.engine === 'client' ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
+                <ShieldCheck className="h-3 w-3" />
+                On-Device (Zero Upload / 100% Private)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-blue-600/20">
+                <Cloud className="h-3 w-3" />
+                Cloud Server Engine
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            {options.engine === 'client'
+              ? 'Audio runs directly inside your browser via Transformers.js Whisper. No files are uploaded to any server.'
+              : 'Uncapped file size stream pipeline powered by Gemini Cloud speech intelligence.'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center rounded-md bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700">
-            <HardDrive className="mr-1.5 h-3.5 w-3.5 text-zinc-500" />
-            No Upload Limit
-          </span>
-          <span className="inline-flex items-center rounded-md bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-700">
-            <Clock className="mr-1.5 h-3.5 w-3.5 text-zinc-500" />
-            Any Duration
-          </span>
-        </div>
+
+        {/* Engine Switcher Quick Pill */}
+        {onChangeEngine && (
+          <div className="flex items-center rounded-xl bg-zinc-100 p-1">
+            <button
+              type="button"
+              onClick={() => onChangeEngine('client')}
+              disabled={isProcessing}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                options.engine === 'client'
+                  ? 'bg-white text-zinc-900 shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-900'
+              }`}
+            >
+              <Cpu className="h-3.5 w-3.5 text-emerald-600" />
+              <span>On-Device (Client)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeEngine('cloud')}
+              disabled={isProcessing}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                options.engine === 'cloud'
+                  ? 'bg-white text-zinc-900 shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-900'
+              }`}
+            >
+              <Cloud className="h-3.5 w-3.5 text-blue-600" />
+              <span>Cloud (Gemini)</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Drag and Drop Zone */}
@@ -207,19 +294,35 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
           </p>
 
           <p className="mt-2 text-xs text-zinc-500">
-            Supports MP3, WAV, M4A, AAC, OGG, FLAC, WEBM, WMA, MP4, MOV (unlimited file size)
+            Supports MP3, WAV, M4A, AAC, OGG, FLAC, WEBM, WMA, MP4, MOV
           </p>
 
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11px] text-zinc-600">
-            <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
-              50MB • 500MB • 2GB+
-            </span>
-            <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
-              Auto Language Detection
-            </span>
-            <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
-              Automatic Speaker Diarization
-            </span>
+            {options.engine === 'client' ? (
+              <>
+                <span className="rounded-full bg-emerald-50 text-emerald-800 px-2.5 py-0.5 border border-emerald-200 font-medium">
+                  100% In-Browser Processing
+                </span>
+                <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
+                  Zero Server Upload
+                </span>
+                <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
+                  WASM &amp; WebGPU Accelerated
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
+                  50MB • 500MB • 2GB+
+                </span>
+                <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
+                  Auto Language Detection
+                </span>
+                <span className="rounded-full bg-white px-2.5 py-0.5 border border-zinc-200">
+                  Speaker Diarization
+                </span>
+              </>
+            )}
           </div>
         </div>
       ) : null}
@@ -239,7 +342,9 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
                   <span>•</span>
                   <span>{selectedFile.type || 'audio'}</span>
                   <span>•</span>
-                  <span className="text-emerald-700 font-medium">Ready to transcribe</span>
+                  <span className="text-emerald-700 font-medium">
+                    {options.engine === 'client' ? 'Ready (Local In-Browser)' : 'Ready (Cloud Stream)'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -256,7 +361,9 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-3">
             <div className="text-xs text-zinc-500">
-              Using streaming upload pipeline with timestamps and speaker detection
+              {options.engine === 'client'
+                ? 'Will transcribe 100% on device using client-side Whisper (no upload).'
+                : 'Using streaming upload pipeline with timestamps and speaker detection.'}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -271,7 +378,7 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
                 onClick={startTranscription}
                 className="rounded-lg bg-zinc-900 px-4 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-zinc-800"
               >
-                Start Transcription
+                {options.engine === 'client' ? 'Transcribe On Device' : 'Start Cloud Transcription'}
               </button>
             </div>
           </div>
@@ -315,25 +422,51 @@ export const AudioUploader: React.FC<AudioUploaderProps> = ({
 
           <div className="mt-3 flex items-center justify-between text-xs text-zinc-500">
             <span>{stageText}</span>
-            <span>No upload limit active</span>
+            <span>{options.engine === 'client' ? 'Client-Side On-Device' : 'No upload limit active'}</span>
           </div>
         </div>
       )}
 
       {/* Error Message */}
       {errorMessage && (
-        <div id="upload-error-alert" className="mt-4 flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50/80 p-3.5 text-xs text-rose-800">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
-          <div className="flex-1">
-            <p className="font-semibold">Transcription Error</p>
-            <p className="mt-0.5">{errorMessage}</p>
+        <div id="upload-error-alert" className="mt-4 flex flex-col gap-2 rounded-xl border border-rose-200 bg-rose-50/80 p-3.5 text-xs text-rose-800">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+            <div className="flex-1">
+              <p className="font-semibold">Transcription Notice</p>
+              <p className="mt-0.5">{errorMessage}</p>
+            </div>
+            <button
+              onClick={() => setErrorMessage(null)}
+              className="text-rose-500 hover:text-rose-700"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
-          <button
-            onClick={() => setErrorMessage(null)}
-            className="text-rose-500 hover:text-rose-700"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          {options.engine === 'client' && onChangeEngine && (
+            <div className="mt-1 flex items-center gap-2 pl-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMessage(null);
+                  onChangeEngine('cloud');
+                }}
+                className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-700 border border-rose-300 shadow-xs hover:bg-rose-100"
+              >
+                Switch to Cloud (Gemini) Engine
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMessage(null);
+                  startTranscription();
+                }}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-700 px-2.5 py-1 text-xs font-semibold text-white shadow-xs hover:bg-rose-800"
+              >
+                Retry On-Device
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -24,7 +24,10 @@ export interface TranscriptionResult {
   audioUrl?: string; // object URL or data URL for playback
 }
 
+export type TranscriptionEngine = 'client' | 'cloud';
+
 export interface TranscriptionOptions {
+  engine: TranscriptionEngine;
   language: string; // 'auto' or language code/name
   detectSpeakers: boolean;
   timestampGranularity: 'detailed' | 'paragraph' | 'sentence';

@@ -1,10 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Play, Pause, RefreshCw, Sparkles, Loader2, AlertCircle, Radio } from 'lucide-react';
-import { TranscriptionOptions, TranscriptionResult } from '../types';
+import {
+  Mic,
+  Square,
+  Play,
+  Pause,
+  RefreshCw,
+  Sparkles,
+  Loader2,
+  AlertCircle,
+  Radio,
+  Cpu,
+  Cloud,
+  ShieldCheck,
+} from 'lucide-react';
+import { TranscriptionOptions, TranscriptionResult, TranscriptionEngine } from '../types';
 import { formatSeconds } from '../utils/audioHelpers';
+import { transcribeAudioClientSide } from '../services/localTranscriber';
+import { WebSpeechRecognizer } from '../services/webSpeechService';
 
 interface AudioRecorderProps {
   options: TranscriptionOptions;
+  onChangeEngine?: (engine: TranscriptionEngine) => void;
   onTranscriptionComplete: (result: TranscriptionResult, audioUrl?: string) => void;
   isProcessing: boolean;
   setIsProcessing: (val: boolean) => void;
@@ -12,6 +28,7 @@ interface AudioRecorderProps {
 
 export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   options,
+  onChangeEngine,
   onTranscriptionComplete,
   isProcessing,
   setIsProcessing,
@@ -23,6 +40,8 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   const [previewAudioUrl, setPreviewAudioUrl] = useState<string | null>(null);
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [processingStage, setProcessingStage] = useState<string>('');
+  const [liveInterimSpeech, setLiveInterimSpeech] = useState<string>('');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -32,12 +51,14 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const webSpeechRef = useRef<WebSpeechRecognizer | null>(null);
 
   useEffect(() => {
     return () => {
       stopCanvasVisualization();
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
       if (previewAudioUrl) URL.revokeObjectURL(previewAudioUrl);
+      if (webSpeechRef.current) webSpeechRef.current.stop();
     };
   }, [previewAudioUrl]);
 
@@ -106,6 +127,7 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   const startRecording = async () => {
     setErrorMessage(null);
     setRecordedBlob(null);
+    setLiveInterimSpeech('');
     if (previewAudioUrl) {
       URL.revokeObjectURL(previewAudioUrl);
       setPreviewAudioUrl(null);
@@ -155,6 +177,20 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
       }, 1000);
 
       startCanvasVisualization(stream);
+
+      // Start optional Web Speech live listener for live speech preview
+      if (WebSpeechRecognizer.isSupported()) {
+        try {
+          const speech = new WebSpeechRecognizer();
+          webSpeechRef.current = speech;
+          speech.start(options.language, {
+            onInterimResult: (txt) => setLiveInterimSpeech(txt),
+            onFinalResult: (txt) => setLiveInterimSpeech((prev) => (prev ? `${prev} ${txt}` : txt)),
+            onError: () => {},
+            onEnd: () => {},
+          });
+        } catch {}
+      }
     } catch (err: any) {
       console.error('Microphone access failed:', err);
       setErrorMessage(
@@ -184,6 +220,10 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   };
 
   const stopRecording = () => {
+    if (webSpeechRef.current) {
+      webSpeechRef.current.stop();
+      webSpeechRef.current = null;
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
@@ -195,6 +235,7 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
   const resetRecording = () => {
     stopRecording();
     setRecordedBlob(null);
+    setLiveInterimSpeech('');
     if (previewAudioUrl) {
       URL.revokeObjectURL(previewAudioUrl);
       setPreviewAudioUrl(null);
@@ -209,8 +250,73 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
     setIsProcessing(true);
     setErrorMessage(null);
 
+    // 1. CLIENT-SIDE ON-DEVICE (Zero Upload)
+    if (options.engine === 'client') {
+      try {
+        setProcessingStage('Decoding recording locally in browser...');
+        const file = new File([recordedBlob], `voice-recording-${Date.now()}.webm`, {
+          type: recordedBlob.type || 'audio/webm',
+        });
+
+        const result = await transcribeAudioClientSide(
+          file,
+          'Voice Recording (On-Device)',
+          options,
+          ({ stage, message }) => {
+            setProcessingStage(message);
+          }
+        );
+
+        setIsProcessing(false);
+        onTranscriptionComplete(result, previewAudioUrl || undefined);
+      } catch (err: any) {
+        console.error('Client-side recording transcription error:', err);
+
+        // Fallback: If Web Speech API captured spoken text during recording, recover seamlessly
+        if (liveInterimSpeech && liveInterimSpeech.trim().length > 0) {
+          const fallbackResult: TranscriptionResult = {
+            id: `rec-${Date.now()}`,
+            fileName: 'Voice Recording (Web Speech)',
+            fileSize: recordedBlob.size,
+            fileSizeFormatted: `${(recordedBlob.size / 1024).toFixed(1)} KB`,
+            durationSeconds: recordDuration,
+            durationFormatted: formatSeconds(recordDuration),
+            detectedLanguage: options.language === 'auto' ? 'English (Auto-detected)' : options.language,
+            createdAt: new Date().toISOString(),
+            fullText: liveInterimSpeech.trim(),
+            segments: [
+              {
+                id: 'seg-fallback-0',
+                speaker: 'Speaker 1',
+                startSeconds: 0,
+                timestamp: `00:00 - ${formatSeconds(recordDuration)}`,
+                text: liveInterimSpeech.trim(),
+              },
+            ],
+          };
+          setIsProcessing(false);
+          onTranscriptionComplete(fallbackResult, previewAudioUrl || undefined);
+          return;
+        }
+
+        setIsProcessing(false);
+        const msg = err?.message || '';
+        if (msg.includes('TransposeDQWeightsForMatMulNBits') || msg.includes('scale')) {
+          setErrorMessage(
+            'ONNX quantized model session error encountered. We have updated the precision to FP32. Please click Transcribe again, or switch to Cloud mode.'
+          );
+        } else {
+          setErrorMessage(
+            msg || 'On-device transcription failed. Please click Transcribe again or switch to Cloud mode.'
+          );
+        }
+      }
+      return;
+    }
+
+    // 2. CLOUD GEMINI STREAMING
     try {
-      // Send as FormData file to /api/transcribe (which has zero file size limits)
+      setProcessingStage('Streaming recording to Cloud AI engine...');
       const file = new File([recordedBlob], `voice-recording-${Date.now()}.webm`, {
         type: recordedBlob.type || 'audio/webm',
       });
@@ -255,16 +361,59 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
 
   return (
     <div id="audio-recorder-card" className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-      <div className="mb-4 flex items-center justify-between border-b border-zinc-100 pb-3">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 pb-3">
         <div>
-          <h2 className="text-base font-semibold text-zinc-900">Live Microphone Recording</h2>
-          <p className="text-xs text-zinc-500">Record without duration limits directly in browser</p>
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-zinc-900">Live Microphone Recording</h2>
+            {options.engine === 'client' ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
+                <ShieldCheck className="h-3 w-3" />
+                On-Device (100% Private)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 ring-1 ring-blue-600/20">
+                <Cloud className="h-3 w-3" />
+                Cloud Engine
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            {options.engine === 'client'
+              ? 'Transcribe locally on your device with no backend upload or cloud fees.'
+              : 'Record and transcribe using Gemini cloud intelligence.'}
+          </p>
         </div>
-        {isRecording && (
-          <span className="flex items-center gap-1.5 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-600/20 animate-pulse">
-            <Radio className="h-3 w-3" />
-            LIVE REC
-          </span>
+
+        {/* Engine Switcher Quick Pill */}
+        {onChangeEngine && (
+          <div className="flex items-center rounded-xl bg-zinc-100 p-1">
+            <button
+              type="button"
+              onClick={() => onChangeEngine('client')}
+              disabled={isProcessing || isRecording}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                options.engine === 'client'
+                  ? 'bg-white text-zinc-900 shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-900'
+              }`}
+            >
+              <Cpu className="h-3.5 w-3.5 text-emerald-600" />
+              <span>On-Device</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeEngine('cloud')}
+              disabled={isProcessing || isRecording}
+              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                options.engine === 'cloud'
+                  ? 'bg-white text-zinc-900 shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-900'
+              }`}
+            >
+              <Cloud className="h-3.5 w-3.5 text-blue-600" />
+              <span>Cloud</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -286,14 +435,22 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
           {isRecording
             ? isPaused
               ? 'Recording paused'
-              : 'Recording in progress (uncapped duration)...'
+              : 'Recording in progress (zero duration limit)...'
             : recordedBlob
             ? 'Recording finished. Ready to transcribe.'
             : 'Click Start Recording to begin'}
         </p>
 
+        {/* Live speech preview if available */}
+        {isRecording && liveInterimSpeech && (
+          <div className="mt-3 max-w-md rounded-lg border border-zinc-200 bg-white p-3 text-xs text-zinc-700 shadow-xs">
+            <span className="font-semibold text-zinc-900">Live preview: </span>
+            <span className="italic">{liveInterimSpeech}</span>
+          </div>
+        )}
+
         {/* Controls */}
-        <div className="mt-6 flex items-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           {!isRecording && !recordedBlob && (
             <button
               id="start-mic-record-btn"
@@ -334,7 +491,7 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
                 className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-rose-700"
               >
                 <Square className="h-3.5 w-3.5 fill-current" />
-                Stop & Review
+                Stop &amp; Review
               </button>
             </>
           )}
@@ -377,12 +534,12 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
                 {isProcessing ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Transcribing...
+                    {processingStage || 'Transcribing...'}
                   </>
                 ) : (
                   <>
                     <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
-                    Transcribe Audio
+                    {options.engine === 'client' ? 'Transcribe On Device' : 'Transcribe Audio'}
                   </>
                 )}
               </button>
@@ -403,12 +560,40 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({
 
       {/* Error Alert */}
       {errorMessage && (
-        <div id="mic-error-alert" className="mt-4 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
-          <div className="flex-1">
-            <p className="font-semibold">Microphone Error</p>
-            <p className="mt-0.5">{errorMessage}</p>
+        <div id="mic-error-alert" className="mt-4 flex flex-col gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+            <div className="flex-1">
+              <p className="font-semibold">
+                {errorMessage.toLowerCase().includes('microphone') ? 'Microphone Issue' : 'Transcription Notice'}
+              </p>
+              <p className="mt-0.5">{errorMessage}</p>
+            </div>
           </div>
+          {options.engine === 'client' && onChangeEngine && (
+            <div className="mt-1 flex items-center gap-2 pl-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMessage(null);
+                  onChangeEngine('cloud');
+                }}
+                className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-rose-700 border border-rose-300 shadow-xs hover:bg-rose-100"
+              >
+                Switch to Cloud (Gemini) Engine
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMessage(null);
+                  transcribeRecording();
+                }}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-700 px-2.5 py-1 text-xs font-semibold text-white shadow-xs hover:bg-rose-800"
+              >
+                Retry On-Device
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
